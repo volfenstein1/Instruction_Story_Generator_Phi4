@@ -1,18 +1,23 @@
-import streamlit as st
+import gradio as gr
 import textstat
-from transformers import pipeline
+from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel, PeftConfig
 
-st.set_page_config(page_title="Story Generator")
-
-st.title("Story Generator")
+"""
+Story Generator using Gradio
+"""
 
 base_model = "microsoft/Phi-4-mini-instruct"
-peft_model = "volfenstein/wolfgang-lora-story-generator-phi4"
+peft_model = "volfenstein/phi4-qlora-story-generator"
 
-model = AutoModelForCausalLM.from_pretrained(base_model)
-model.load_adapter(peft_model)
+model = AutoModelForCausalLM.from_pretrained(
+    base_model, trust_remote_code=True
+)
+tokenizer = AutoTokenizer.from_pretrained(base_model)
+
+config = PeftConfig.from_pretrained(peft_model)
+model = PeftModel.from_pretrained(model, peft_model)
 
 
 def generate_story(topic, theme, wordcount, paragraphs, complexity):
@@ -34,6 +39,7 @@ def generate_story(topic, theme, wordcount, paragraphs, complexity):
         complexity=complexity,
     )
 
+    # Select device
     device = (
         "cuda"
         if torch.cuda.is_available()
@@ -42,14 +48,10 @@ def generate_story(topic, theme, wordcount, paragraphs, complexity):
         else "cpu"
     )
 
-    generator = pipeline(
-        "text-generation",
-        model=model,
-        device=device,
-    )
+    generator = pipeline("text-generation", model=model, device=device)
     output = generator(
         [{"role": "user", "content": user_prompt}],
-        max_new_tokens=128,
+        max_new_tokens=512,
         return_full_text=False,
     )[0]
 
@@ -160,45 +162,49 @@ topics = [
     "miniature worlds",
 ]
 
-left, right = st.columns(2, vertical_alignment="bottom")
 
-selected_theme = left.selectbox(
-    "Theme",
-    themes,
-    index=None,
-    placeholder="Select a theme...",
-)
-
-selected_topic = right.selectbox(
-    "Topic",
-    topics,
-    index=None,
-    placeholder="Select a topic...",
-)
-
-selected_wordcount = st.slider("Target word count:", 50, 800, step=25)
-
-selected_paragraphs = st.slider("Number of paragraphs", 1, 9)
-
-selected_complexity = st.slider("Complexity:", 0, 12)
-
-submit = st.button("Generate")
-
-if selected_theme and selected_topic and submit:
-    with st.spinner("generating...", show_time=True):
-        story = generate_story(
-            topic=selected_topic,
-            theme=selected_theme,
-            wordcount=selected_wordcount,
-            paragraphs=selected_paragraphs,
-            complexity=selected_complexity,
-        )
-    st.write(story)
-    st.write(
-        "Word count:",
-        len(story.split(" ")),
-        "Paragraphs:",
-        len(story.split("\n")),
-        "Flesch Kincaid Grade:",
-        round(textstat.flesch_kincaid_grade(story), 1),
+def generate_ui(theme, topic, wordcount, paragraphs, complexity):
+    story = generate_story(
+        topic=topic,
+        theme=theme,
+        wordcount=wordcount,
+        paragraphs=paragraphs,
+        complexity=complexity,
     )
+    wc = len(story.split())
+    paras = story.count("\n") + 1 if story else 0
+    grade = round(textstat.flesch_kincaid_grade(story), 1)
+    metrics = f"Word count: {wc} | Paragraphs: {paras} | Flesch Kincaid Grade: {grade}"
+    return story, metrics
+
+
+if __name__ == "__main__":
+    with gr.Blocks() as demo:
+        gr.Markdown("# Story Generator")
+        with gr.Row():
+            theme_input = gr.Dropdown(choices=themes, label="Theme")
+            topic_input = gr.Dropdown(choices=topics, label="Topic")
+        wordcount_input = gr.Slider(
+            50, 800, step=25, value=50, label="Target word count"
+        )
+        paragraphs_input = gr.Slider(
+            1, 9, step=1, value=1, label="Number of paragraphs"
+        )
+        complexity_input = gr.Slider(
+            0, 12, step=1, value=0, label="Complexity"
+        )
+        generate_button = gr.Button("Generate")
+        story_output = gr.Textbox(lines=20, label="Generated Story")
+        metrics_output = gr.Textbox(label="Metrics")
+        generate_button.click(
+            fn=generate_ui,
+            inputs=[
+                theme_input,
+                topic_input,
+                wordcount_input,
+                paragraphs_input,
+                complexity_input,
+            ],
+            outputs=[story_output, metrics_output],
+        )
+    demo.launch()
